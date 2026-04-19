@@ -42,6 +42,12 @@ class DBImpl : public DB {
   Status Write(const WriteOptions& options, WriteBatch* updates) override;
   Status Get(const ReadOptions& options, const Slice& key,
              std::string* value) override;
+  Status Scan(const ReadOptions& options, const Slice& start_key,
+      const Slice& end_key,
+      std::vector<std::pair<std::string, std::string>>* results) override;
+  Status DeleteRange(const WriteOptions&, const Slice& start_key,
+      const Slice& end_key) override;
+  Status ForceFullCompaction() override;
   Iterator* NewIterator(const ReadOptions&) override;
   const Snapshot* GetSnapshot() override;
   void ReleaseSnapshot(const Snapshot* snapshot) override;
