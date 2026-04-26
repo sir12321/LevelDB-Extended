@@ -1211,46 +1211,60 @@ Status DBImpl::Get(const ReadOptions &options, const Slice &key,
   current->Unref();
   return s;
 }
-
 Status DBImpl::Scan(const ReadOptions &options, const Slice &start_key,
                     const Slice &end_key,
                     std::vector<std::pair<std::string, std::string>> *result) {
-  if (result != nullptr) {
-    result->clear();
-  } else {
+  if (result == nullptr) {
     return Status::InvalidArgument("Result vector can't be null");
   }
 
-  Iterator *it = NewIterator(options);
+  result->clear();
+
+  ReadOptions read_options = options;
+
+  const Snapshot *snapshot = GetSnapshot();
+  read_options.snapshot = snapshot;
+
+  std::unique_ptr<Iterator> it(NewIterator(read_options));
   it->Seek(start_key);
+
   while (it->Valid() && it->key().compare(end_key) < 0) {
-    result_push_back(
-        std::make_pair(it->key().toString(), it->value().toString()));
+    result->emplace_back(std::string(it->key().data(), it->key().size()),
+                         std::string(it->value().data(), it->value().size()));
     it->Next();
   }
+
   Status s = it->status();
-  delete it;
+
+  ReleaseSnapshot(snapshot);
+
   return s;
 }
 
 Status DBImpl::DeleteRange(const WriteOptions &write_options,
                            const Slice &start_key, const Slice &end_key) {
   WriteBatch batch;
-  ReadOptions read_options;
-  Iterator *it = NewIterator(read_options);
 
+  ReadOptions read_options;
+  const Snapshot *snapshot = GetSnapshot();
+  read_options.snapshot = snapshot;
+
+  std::unique_ptr<Iterator> it(NewIterator(read_options));
   it->Seek(start_key);
 
   while (it->Valid() && it->key().compare(end_key) < 0) {
-    batch.delete(it->key());
+    batch.Delete(it->key());
     it->Next();
   }
 
   Status s = it->status();
-  delete it;
+
   if (s.ok()) {
-    s = Write(write_options, batch);
+    s = Write(write_options, &batch);
   }
+
+  ReleaseSnapshot(snapshot);
+
   return s;
 }
 
