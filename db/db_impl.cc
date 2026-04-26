@@ -42,12 +42,14 @@ const int kNumNonTableCacheFiles = 10;
 // Information kept for every waiting writer
 struct DBImpl::Writer {
   explicit Writer(port::Mutex *mu)
-      : batch(nullptr), sync(false), done(false), cv(mu) {}
+      : batch(nullptr), sync(false), done(false), exclusive(false), cv(mu) {}
 
   Status status;
   WriteBatch *batch;
   bool sync;
   bool done;
+  // If true, BuildBatchGroup will not absorb this writer into another leader's batch.
+  bool exclusive;
   port::CondVar cv;
 };
 
@@ -138,7 +140,9 @@ DBImpl::DBImpl(const Options &raw_options, const std::string &dbname)
       background_compaction_scheduled_(false), manual_compaction_(nullptr),
       versions_(new VersionSet(dbname_, &options_, table_cache_,
                                &internal_comparator_)),
-      force_full_compaction_stats_(nullptr) {}
+      force_full_compaction_stats_(nullptr),
+      force_compaction_in_progress_(false),
+      force_compaction_done_(&mutex_) {}
 
 DBImpl::~DBImpl() {
   // Wait for background work to finish.
@@ -600,9 +604,17 @@ Status DBImpl::ForceFullCompaction() {
   FullCompactionStats full_compaction_stats;
   {
     MutexLock l(&mutex_);
+    // Serialize concurrent ForceFullCompaction calls. Without this, two
+    // callers would overwrite each other's force_full_compaction_stats_
+    // pointer, causing one caller's stats to be silently dropped and the
+    // other to observe a dangling or null pointer mid-compaction.
+    while (force_compaction_in_progress_) {
+      force_compaction_done_.Wait();
+    }
     if (!bg_error_.ok()) {
       return bg_error_;
     }
+    force_compaction_in_progress_ = true;
     force_full_compaction_stats_ = &full_compaction_stats;
   }
 
@@ -613,6 +625,8 @@ Status DBImpl::ForceFullCompaction() {
     MutexLock l(&mutex_);
     s = bg_error_;
     force_full_compaction_stats_ = nullptr;
+    force_compaction_in_progress_ = false;
+    force_compaction_done_.SignalAll();
   }
 
   Log(options_.info_log,
@@ -1078,8 +1092,7 @@ Status DBImpl::DoCompactionWork(CompactionState *compact) {
 
   mutex_.Lock();
   stats_[compact->compaction->level() + 1].Add(stats);
-  if (force_full_compaction_stats_ != nullptr &&
-      manual_compaction_ != nullptr) {
+  if (force_full_compaction_stats_ != nullptr) {
     force_full_compaction_stats_->compactions++;
     force_full_compaction_stats_->input_files +=
         compact->compaction->num_input_files(0) +
@@ -1222,8 +1235,14 @@ Status DBImpl::Scan(const ReadOptions &options, const Slice &start_key,
 
   ReadOptions read_options = options;
 
-  const Snapshot *snapshot = GetSnapshot();
-  read_options.snapshot = snapshot;
+  // Only take a snapshot if the caller did not provide one. Overriding a
+  // caller-supplied snapshot would expose writes that happened after the
+  // caller's intended read horizon.
+  const Snapshot *owned_snapshot = nullptr;
+  if (read_options.snapshot == nullptr) {
+    owned_snapshot = GetSnapshot();
+    read_options.snapshot = owned_snapshot;
+  }
 
   std::unique_ptr<Iterator> it(NewIterator(read_options));
   it->Seek(start_key);
@@ -1236,7 +1255,9 @@ Status DBImpl::Scan(const ReadOptions &options, const Slice &start_key,
 
   Status s = it->status();
 
-  ReleaseSnapshot(snapshot);
+  if (owned_snapshot != nullptr) {
+    ReleaseSnapshot(owned_snapshot);
+  }
 
   return s;
 }
@@ -1245,25 +1266,69 @@ Status DBImpl::DeleteRange(const WriteOptions &write_options,
                            const Slice &start_key, const Slice &end_key) {
   WriteBatch batch;
 
-  ReadOptions read_options;
-  const Snapshot *snapshot = GetSnapshot();
-  read_options.snapshot = snapshot;
+  // Enqueue as an exclusive writer so no concurrent Put can sneak in between
+  // the scan and the commit. Once we reach the front of writers_, all writers
+  // queued behind us are blocked until we pop ourselves.
+  Writer w(&mutex_);
+  w.batch = &batch;
+  w.sync = write_options.sync;
+  w.done = false;
+  w.exclusive = true;
 
-  std::unique_ptr<Iterator> it(NewIterator(read_options));
+  MutexLock l(&mutex_);
+  writers_.push_back(&w);
+  while (!w.done && &w != writers_.front()) {
+    w.cv.Wait();
+  }
+  if (w.done) return w.status;
+
+  // We're at the front. Release the mutex so NewIterator can acquire it
+  // briefly, but new writers cannot execute because we're still at the front.
+  mutex_.Unlock();
+
+  std::unique_ptr<Iterator> it(NewIterator(ReadOptions()));
   it->Seek(start_key);
-
   while (it->Valid() && it->key().compare(end_key) < 0) {
     batch.Delete(it->key());
     it->Next();
   }
-
   Status s = it->status();
+  it.reset();
+
+  mutex_.Lock();
 
   if (s.ok()) {
-    s = Write(write_options, &batch);
+    s = MakeRoomForWrite(false);
   }
 
-  ReleaseSnapshot(snapshot);
+  if (s.ok() && WriteBatchInternal::Count(&batch) > 0) {
+    uint64_t last_sequence = versions_->LastSequence();
+    WriteBatchInternal::SetSequence(&batch, last_sequence + 1);
+    last_sequence += WriteBatchInternal::Count(&batch);
+    {
+      mutex_.Unlock();
+      s = log_->AddRecord(WriteBatchInternal::Contents(&batch));
+      bool sync_error = false;
+      if (s.ok() && write_options.sync) {
+        s = logfile_->Sync();
+        if (!s.ok()) sync_error = true;
+      }
+      if (s.ok()) {
+        s = WriteBatchInternal::InsertInto(&batch, mem_);
+      }
+      mutex_.Lock();
+      if (sync_error) {
+        RecordBackgroundError(s);
+      }
+    }
+    versions_->SetLastSequence(last_sequence);
+  }
+
+  // Pop ourselves and wake the next writer.
+  writers_.pop_front();
+  if (!writers_.empty()) {
+    writers_.front()->cv.Signal();
+  }
 
   return s;
 }
@@ -1408,6 +1473,10 @@ WriteBatch *DBImpl::BuildBatchGroup(Writer **last_writer) {
     Writer *w = *iter;
     if (w->sync && !first->sync) {
       // Do not include a sync write into a batch handled by a non-sync write.
+      break;
+    }
+    if (w->exclusive) {
+      // Do not absorb a DeleteRange sentinel into another writer's batch group.
       break;
     }
 

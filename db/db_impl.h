@@ -222,6 +222,11 @@ private:
 
   FullCompactionStats *force_full_compaction_stats_ GUARDED_BY(mutex_);
 
+  // Serializes concurrent ForceFullCompaction calls so their stats pointers
+  // don't overwrite each other.
+  bool force_compaction_in_progress_ GUARDED_BY(mutex_);
+  port::CondVar force_compaction_done_ GUARDED_BY(mutex_);
+
   CompactionStats stats_[config::kNumLevels] GUARDED_BY(mutex_);
 };
 

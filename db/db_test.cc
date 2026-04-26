@@ -2169,6 +2169,21 @@ class ModelDB : public DB {
   }
   void CompactRange(const Slice* start, const Slice* end) override {}
 
+  Status Scan(const ReadOptions& options, const Slice& start_key,
+              const Slice& end_key,
+              std::vector<std::pair<std::string, std::string>>* result) override {
+    assert(false);  // Not implemented in model
+    return Status::NotSupported("ModelDB::Scan");
+  }
+  Status DeleteRange(const WriteOptions& options, const Slice& start_key,
+                     const Slice& end_key) override {
+    assert(false);  // Not implemented in model
+    return Status::NotSupported("ModelDB::DeleteRange");
+  }
+  Status ForceFullCompaction() override {
+    return Status::OK();
+  }
+
  private:
   class ModelIter : public Iterator {
    public:
