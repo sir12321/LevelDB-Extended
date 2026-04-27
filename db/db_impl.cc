@@ -48,7 +48,8 @@ struct DBImpl::Writer {
   WriteBatch *batch;
   bool sync;
   bool done;
-  // If true, BuildBatchGroup will not absorb this writer into another leader's batch.
+  // If true, BuildBatchGroup will not absorb this writer into another leader's
+  // batch.
   bool exclusive;
   port::CondVar cv;
 };
@@ -141,8 +142,7 @@ DBImpl::DBImpl(const Options &raw_options, const std::string &dbname)
       versions_(new VersionSet(dbname_, &options_, table_cache_,
                                &internal_comparator_)),
       force_full_compaction_stats_(nullptr),
-      force_compaction_in_progress_(false),
-      force_compaction_done_(&mutex_) {}
+      force_compaction_in_progress_(false), force_compaction_done_(&mutex_) {}
 
 DBImpl::~DBImpl() {
   // Wait for background work to finish.
@@ -641,6 +641,21 @@ Status DBImpl::ForceFullCompaction() {
       static_cast<long long>(full_compaction_stats.output_files),
       static_cast<long long>(full_compaction_stats.bytes_read),
       static_cast<long long>(full_compaction_stats.bytes_written));
+  std::fprintf(
+      stdout,
+      "Manual full compaction summary\n"
+      "  Compactions executed: %llu\n"
+      "  Input files: %llu\n"
+      "  Output files: %llu\n"
+      "  Bytes read: %llu\n"
+      "  Bytes written: %llu\n",
+      static_cast<unsigned long long>(full_compaction_stats.compactions),
+      static_cast<unsigned long long>(full_compaction_stats.input_files),
+      static_cast<unsigned long long>(full_compaction_stats.output_files),
+      static_cast<unsigned long long>(full_compaction_stats.bytes_read),
+      static_cast<unsigned long long>(full_compaction_stats.bytes_written));
+  std::fflush(stdout);
+
   return s;
 }
 
@@ -1280,7 +1295,8 @@ Status DBImpl::DeleteRange(const WriteOptions &write_options,
   while (!w.done && &w != writers_.front()) {
     w.cv.Wait();
   }
-  if (w.done) return w.status;
+  if (w.done)
+    return w.status;
 
   // We're at the front. Release the mutex so NewIterator can acquire it
   // briefly, but new writers cannot execute because we're still at the front.
@@ -1311,7 +1327,8 @@ Status DBImpl::DeleteRange(const WriteOptions &write_options,
       bool sync_error = false;
       if (s.ok() && write_options.sync) {
         s = logfile_->Sync();
-        if (!s.ok()) sync_error = true;
+        if (!s.ok())
+          sync_error = true;
       }
       if (s.ok()) {
         s = WriteBatchInternal::InsertInto(&batch, mem_);
