@@ -544,7 +544,6 @@ Status DBImpl::WriteLevel0Table(MemTable *mem, VersionEdit *edit,
   if (force_full_compaction_stats_ != nullptr) {
     force_full_compaction_stats_->compactions++;
     force_full_compaction_stats_->output_files += (meta.file_size > 0) ? 1 : 0;
-    force_full_compaction_stats_->bytes_read += mem->ApproximateMemoryUsage();
     force_full_compaction_stats_->bytes_written += meta.file_size;
   }
   return s;
@@ -643,12 +642,12 @@ Status DBImpl::ForceFullCompaction() {
       static_cast<long long>(full_compaction_stats.bytes_written));
   std::fprintf(
       stdout,
-      "Manual full compaction summary\n"
-      "  Compactions executed: %llu\n"
-      "  Input files: %llu\n"
-      "  Output files: %llu\n"
-      "  Bytes read: %llu\n"
-      "  Bytes written: %llu\n",
+      "ForceFullCompaction statistics:\n"
+      "  compactions executed: %llu\n"
+      "  input files: %llu\n"
+      "  output files: %llu\n"
+      "  total bytes read: %llu\n"
+      "  total bytes written: %llu\n",
       static_cast<unsigned long long>(full_compaction_stats.compactions),
       static_cast<unsigned long long>(full_compaction_stats.input_files),
       static_cast<unsigned long long>(full_compaction_stats.output_files),

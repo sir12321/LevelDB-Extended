@@ -1,0 +1,43 @@
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# CMake build directories
+build/
+cmake-build-*/
+
+# Root-level CMake in-source build artifacts
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+Makefile
+cmake_install.cmake
+cmake/leveldbConfig.cmake
+cmake/leveldbConfigVersion.cmake
+
+# Generated headers
+include/port/port_config.h
+
+# Compiled outputs
+libleveldb.a
+leveldb_tests
+leveldbutil
+c_test
+db_bench
+env_posix_test
+lib/
+*.o
+*.a
+*.so
+*.dylib
+
+# Third-party sources (use submodules or system packages)
+third_party/
+
+# Checker repo (clone separately)
+COP290-A3-CHECKER/
+
+# Test databases
+/tmp/testdb
+/tmp/testdb_race
