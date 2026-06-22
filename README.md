@@ -1,4 +1,8 @@
+# LevelDB Extended
+
 LevelDB is a fast key-value storage library written at Google that provides an ordered mapping from string keys to string values.
+
+**Extended by Manya Jain and Prabuddha Sinha** with three new operations: `Scan`, `DeleteRange`, and `ForceFullCompaction`. See the [Extended Features](#extended-features) section below.
 
 > **This repository is receiving very limited maintenance. We will only review the following types of changes.**
 >
@@ -7,7 +11,47 @@ LevelDB is a fast key-value storage library written at Google that provides an o
 
 [![ci](https://github.com/google/leveldb/actions/workflows/build.yml/badge.svg)](https://github.com/google/leveldb/actions/workflows/build.yml)
 
-Authors: Sanjay Ghemawat (sanjay@google.com) and Jeff Dean (jeff@google.com)
+Original authors: Sanjay Ghemawat (sanjay@google.com) and Jeff Dean (jeff@google.com)
+
+# Extended Features
+
+Three new operations have been added to the `leveldb::DB` interface in [`include/leveldb/db.h`](include/leveldb/db.h) and implemented in [`db/db_impl.cc`](db/db_impl.cc).
+
+### `Scan(start_key, end_key, &result)`
+
+Reads all key-value pairs in the half-open range `[start_key, end_key)` in sorted order into a `std::vector<std::pair<std::string, std::string>>`. A consistent snapshot is acquired automatically if the caller does not supply one, so the result reflects a point-in-time view of the database.
+
+```cpp
+std::vector<std::pair<std::string, std::string>> result;
+Status s = db->Scan(ReadOptions(), "key_000", "key_100", &result);
+```
+
+### `DeleteRange(start_key, end_key)`
+
+Atomically deletes all keys in the half-open range `[start_key, end_key)`. Implemented using an exclusive writer lock so no concurrent `Put` can slip in between the scan and the commit, avoiding torn deletes.
+
+```cpp
+Status s = db->DeleteRange(WriteOptions(), "key_000", "key_100");
+```
+
+### `ForceFullCompaction()`
+
+Triggers a synchronous full compaction across all levels of the LSM tree. Only one compaction may run at a time (additional callers block until the first finishes). On completion, detailed statistics are printed to stdout and the info log:
+
+```
+ForceFullCompaction statistics:
+  compactions executed: 4
+  input files: 12
+  output files: 3
+  total bytes read: 52428800
+  total bytes written: 49283072
+```
+
+```cpp
+Status s = db->ForceFullCompaction();
+```
+
+---
 
 # Features
 
